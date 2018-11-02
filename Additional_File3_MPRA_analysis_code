@@ -1,0 +1,1053 @@
+---
+title: "MPRA REPORT"
+output: html_document
+---
+
+
+```{r opts,echo=FALSE}
+.libPaths( c("/n/home06/agroff/R/x86_64-unknown-linux-gnu-library/3.3",.libPaths()))
+library(knitr)
+library(rmarkdown)
+```
+
+
+```{r setup,echo=FALSE,warning=FALSE,message=FALSE}
+library(ggplot2)
+library(reshape)
+library(plyr)
+library(Biobase)
+library(stringr)
+library(reshape2)
+opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE,fig.height=8, fig.width=8,fig.path = paste(filename,"images/",sep="/"), dev=c('png', 'pdf'))
+```
+
+
+```{r loaddata, echo=FALSE}
+
+data_counts_orig<-read.table("C2C12_lincmRNA_combined_Jan2017_hiseq.tab",header=TRUE,stringsAsFactors = FALSE)
+annotation<-read.table("lincmRNA_pool_annotation_updated_promotersinloci.txt",header=TRUE,stringsAsFactors = FALSE)
+locus_TSS<-read.table("lincmRNA_TSSs.txt",header=TRUE,stringsAsFactors = FALSE,sep="\t")
+
+threshold<-10
+```
+
+
+
+
+```{r tagsperelement}
+loci<-c("CMV","Cdkn1a","Crnde","Enc1_mm10_refGene","Fendrr","Foxf1","Irx5","Lincenc1","Lincp21","Morc2a","Peril","Sox2_mm10","Tug1")
+barcodes_to_keep<-annotation[grep(paste(loci,collapse="|"),annotation$name),]
+barcodes_to_keep<-barcodes_to_keep[grep("Lincp21_promoter_mm10_refGene_NR_036469_scrambled|Sox2DistalSuperEnhancer|Cdkn1a_promoter_scrambled|Ef1a|TK",barcodes_to_keep$name,invert=TRUE),"barcode"]
+
+data_counts_orig<-data_counts_orig[data_counts_orig$barcodes %in% barcodes_to_keep,]
+QC.dat.annot<-merge(annotation,data_counts_orig,by.x="barcode",by.y="barcodes")
+QC.dat.annot_touse<-QC.dat.annot
+data_counts_touse<-data_counts_orig
+
+#remove barcodes with DNA representation below threshold
+data_dna<-data_counts_touse[,grep("VEC",names(data_counts_touse))]
+row.names(data_dna)<-data_counts_touse$barcodes
+data_dna[data_dna<threshold]<-0
+data_dna[data_dna>=threshold]<-1
+data_dna$sum<-rowSums(data_dna)
+data_dna<-data_dna[which(data_dna$sum>=3),] #if 3 or more samples agree that it passes thresh then keep 
+
+data_counts_touse<-data_counts_touse[which(data_counts_touse$barcodes %in% row.names(data_dna)),]
+
+QC.dat.binary<-QC.dat.annot_touse[,c("Element")]
+binary<-QC.dat.annot_touse[,c(14:dim(QC.dat.annot_touse)[2])]
+binary[binary>0]<-1#if tags represented above threshold, call "1"
+QC.dat.binary<-cbind(QC.dat.binary,binary)
+names(QC.dat.binary)<-c("Element",names(binary))
+
+tags<-aggregate(.~Element,data=QC.dat.binary,sum)
+
+tags.annot<-merge(tags,QC.dat.annot_touse,by.x="Element",by.y="Element")
+
+tags.melt<-melt(tags)
+#ggplot(tags.melt,aes(variable,value))+geom_boxplot()+theme_bw()+theme(axis.text.x = element_text(angle = 65, hjust = 1))
+```
+
+
+```{r tagperrepdensity}
+#Tag per element per replicate density plots: 
+#ggplot(tags.melt,aes(value,fill=variable))+geom_density()+theme_bw()
+#summary(tags)
+```
+
+
+```{r tagcountdist}
+# tag distribution 
+#distribution of counts
+data_counts_touse.melt<-melt(data_counts_touse)
+```
+
+
+```{r norm}
+# Assess replicate noise and tag noise within replicates
+normalize_andcenter<-function(dat,threshold){
+  dat2<-as.matrix(dat[,2:dim(dat)[2]])
+  dat2[dat2<threshold]<-NA
+  repsums<-colSums(dat2,na.rm=TRUE)
+  dat_norm<-t(t(dat2)/repsums)
+  medians<-apply(dat_norm,2,median,na.rm=TRUE)
+  dat_norm2<-t(t(dat_norm)/medians)
+  dat<-cbind(dat["barcodes"],dat_norm2)
+  #namesfordat<-c("barcodes",names(dat_norm))
+  as.data.frame(dat)
+  #names(dat)<-namesfordat
+  #dat
+}
+#dat_norm<-normalize(data_counts_touse,threshold)
+dat_norm<-normalize_andcenter(data_counts_touse,threshold)
+```
+
+
+Histogram of normalized DNA and RNA samples: 
+
+```{r histograms}
+dat_norm.melt<-melt(dat_norm)
+
+#DNA
+DNA<-dat_norm.melt[grep("VEC",dat_norm.melt$variable),]
+ggplot(DNA,aes(value))+geom_histogram()+theme_bw()
+medDNA<-median(DNA$value,na.rm = TRUE)
+
+#RNA
+RNA<-dat_norm.melt[grep("VEC",dat_norm.melt$variable,invert=TRUE),]
+ggplot(RNA,aes(value))+geom_histogram()+theme_bw()
+medRNA<-median(RNA$value,na.rm = TRUE)
+
+#median center (divide by median)
+
+DNA$DNA_centered<-DNA$value/medDNA
+RNA$RNA_centered<-RNA$value/medRNA
+
+#DNA
+ggplot(DNA,aes(DNA_centered))+geom_histogram()+theme_bw()+ggtitle("DNA centered")
+median(DNA$DNA_centered,na.rm = TRUE)
+
+#RNA
+ggplot(RNA,aes(RNA_centered))+geom_histogram()+theme_bw()+ggtitle("RNA centered")
+median(RNA$RNA_centered,na.rm = TRUE)
+
+#median center dat_norm 
+DNA_centered<-cast(DNA,barcodes~variable)
+RNA_centered<-cast(RNA,barcodes~variable)
+
+dat_norm_centered<-merge(RNA_centered,DNA_centered)
+```
+
+
+```{r scatters}
+#replicate scatters/correlations
+#Can deffinitely see some batch effects from RNA replicates from different passages (biological replicates). Dont see this with the Vec replicates. 
+
+#library(GGally)
+#pdf("pairs.pdf")
+#ggpairs(dat_norm[,2:dim(dat_norm)[2]])
+#dev.off()
+
+library(stringr)
+dat_norm2<-dat_norm_centered[,1:11]
+colnames(dat_norm2)<-c("barcodes","C2C12_1","C2C12_2","C2C12_3","C2C12_4","C2C12_5","VEC_1","VEC_2","VEC_3","VEC_4","VEC_5")
+dat_norm<-dat_norm2;rm(dat_norm2)
+dat_norm.melt<-melt(dat_norm)
+info<-str_split_fixed(dat_norm.melt$variable,"_",2)
+dat_norm.melt$sampletype<-info[,1]
+dat_norm.melt$replicate<-info[,2]
+```
+
+
+
+```{r signalprocessing}
+# make signal ratios
+#- average and variance across all samples
+#- 100* randomly selected 2rna/3dna ratios
+#- propagation of error for variance for each measurement?
+#histograph of ratios (avRNA/avVEC) for this locus + controls (before shuffle): 
+library(Biobase)
+
+# ALL SAMPLES
+#C2C12 vs Vec
+#http://stackoverflow.com/questions/25099825/row-wise-variance-of-a-matrix-in-r
+RowVar <- function(x) {
+  ans<-sum((x - mean(x,na.rm=TRUE)^2),na.rm=TRUE)/(length(x) - 1)
+  ans
+}
+
+#change name to eventually make function 
+names(dat_norm)<-gsub("C2C12","RNA",names(dat_norm))
+names(dat_norm)<-gsub("lincmRNAvec","VEC",names(dat_norm))
+
+RNA<-dat_norm[,grep("RNA",names(dat_norm))]
+row.names(RNA)<-dat_norm$barcodes
+VEC<-dat_norm[,grep("VEC",names(dat_norm))]
+row.names(VEC)<-dat_norm$barcodes
+
+rnaAvg<-rowMedians(as.matrix(RNA))
+rnaVars<-apply(RNA,1,RowVar)
+vecAvg<-rowMedians(as.matrix(VEC))
+vecVars<-apply(VEC,1,RowVar)
+ratio<-rnaAvg/vecAvg
+
+scatter_dat<-as.data.frame(cbind(rnaAvg,vecAvg))
+
+pdf("median_scatter.pdf")
+ggplot(scatter_dat,aes(log2(vecAvg),log2(rnaAvg)))+geom_point()+theme_bw()
+dev.off()
+
+# if tag not present in all vector samples, remove before continuing 
+vec_na_sum<-rowSums(is.na(VEC))
+tags_present<-which(vec_na_sum<dim(VEC)[2])
+dat_norm<-dat_norm[tags_present,]
+
+
+#shuffle 
+randRatioShuffle<-function(dat,nshuffle){
+  vec<-dat[,grep('vec',names(dat),ignore.case=TRUE)]
+  row.names(vec)<-dat$barcodes
+  rna<-dat[,grep('vec',names(dat),ignore.case=TRUE,invert=TRUE)]
+  row.names(rna)<-rna$barcodes
+  rna$barcodes<-NULL
+  
+  nshuffle<-as.numeric(nshuffle)
+  #initialize ratio_output_dataframe 
+  ratio_output_dataframe<-data.frame(row.names=row.names(rna))
+  rna_out<-data.frame(row.names=row.names(rna))
+  vec_out<-data.frame(row.names=row.names(vec))
+  rna<-as.matrix(rna)
+  vec<-as.matrix(vec)
+  for(i in seq(1:nshuffle)){
+    #pick 2 rna at random
+    rna_curr<-rowMedians(rna[,sample(1:dim(rna)[2],2)])
+    #pick 3 vec at random 
+    vec_curr<-rowMedians(vec[,sample(1:dim(vec)[2],3)])
+    ratio_curr<-rna_curr/vec_curr
+    ratio_output_dataframe<-cbind(ratio_output_dataframe,ratio_curr)
+    rna_out<-cbind(rna_out,rna_curr)
+    vec_out<-cbind(vec_out,vec_curr)
+  }
+  names(ratio_output_dataframe)<-seq(1:nshuffle)
+  ratio_output_dataframe
+}
+
+datratioshuffle<-randRatioShuffle(dat_norm_centered,100)
+datratioshuffle_short.melt<-melt(datratioshuffle[,1:10])
+
+med_shuffle_dat<-rowMedians(as.matrix(datratioshuffle),na.rm=TRUE)
+med_shuffle_dat<-as.data.frame(med_shuffle_dat)
+var_shuffle_dat<-apply(datratioshuffle,1,var)
+var_shuffle_dat<-as.data.frame(var_shuffle_dat)
+
+row.names(med_shuffle_dat)<-row.names(datratioshuffle)
+med_shuffle_dat$barcodes<-row.names(datratioshuffle)
+med_shuffle_dat$variance<-var_shuffle_dat$var_shuffle_dat
+
+shuffle.annot<-merge(annotation,med_shuffle_dat,by.x="barcode",by.y="barcodes")
+shuffle.annot$type<-"signal"
+shuffle.annot$type[grep("promoter",shuffle.annot$name,ignore.case=TRUE)]<-"promoter"
+shuffle.annot$type[grep("scramble",shuffle.annot$name,ignore.case=TRUE)]<-"scramble"
+locus_shuffle_annot_save<-shuffle.annot
+median_ratio<-median(shuffle.annot$med_shuffle_dat,na.rm=TRUE)
+
+
+#still need to do this?? 
+#shuffle.annot$centered_shuffle_ratio<-shuffle.annot$med_shuffle_dat/median_ratio
+```
+
+```{r controls}
+CMV<-shuffle.annot[grep("CMV",shuffle.annot$name),]
+#ggplot(CMV,aes(name,med_shuffle_dat))+geom_boxplot(notch=TRUE)+theme_bw()
+#pdf("cmv_controls_all.pdf")
+ggplot(CMV,aes(name,log2(med_shuffle_dat)))+geom_boxplot(notch=TRUE)+theme_bw()
+#dev.off()
+#ggplot(CMV,aes(name,centered_shuffle_ratio))+geom_boxplot(notch=TRUE)+theme_bw()
+#ggplot(CMV,aes(name,log2(centered_shuffle_ratio)))+geom_boxplot(notch=TRUE)+theme_bw()
+
+```
+
+Center data
+```{r centerdata}
+#shuffle.annot$med_shuffle_dat<-shuffle.annot$centered_shuffle_ratio
+```
+
+
+```{r binned_locus_boxplot}
+# boxplots of signal across locus, binned 
+locus_only_shuffle.annot<-shuffle.annot
+locus_only_shuffle.annot<-locus_only_shuffle.annot[grep("promoter",locus_only_shuffle.annot$name,invert=TRUE),]
+locus_only_shuffle.annot<-locus_only_shuffle.annot[grep("scramble",locus_only_shuffle.annot$name,invert=TRUE),]
+
+#sort on localOrder 
+locus_only_shuffle.annot<-locus_only_shuffle.annot[order(locus_only_shuffle.annot$LocalOrder),]
+#partition into 1,100 evenly 
+locus_only_shuffle.annot$binnedOrder<-as.factor(cut(locus_only_shuffle.annot$LocalOrder,100,labels=FALSE))
+names(locus_only_shuffle.annot)[grep("med_shuffle_dat",names(locus_only_shuffle.annot))]<-"ratio"
+```
+
+
+```{r dotplots}
+locus_dat<-locus_only_shuffle.annot
+loc<-str_split_fixed(locus_dat$localCoordinates,":",2)
+startandend<-str_split_fixed(loc[,2],"-",2)
+start<-as.numeric(startandend[,1])
+locus_dat$start<-start
+locus_dat<-locus_dat[grep("promoter|scrambled",locus_dat$name,ignore.case=TRUE,invert=TRUE),]
+unique(locus_dat$name)
+```
+
+
+# sliding window plot
+
+```{r functions_for_sliding_window_plots, echo=FALSE, results='hide'}
+library(plyr)
+library(ggplot2)
+library(stringr)
+library(reshape2)
+library(matrixStats)
+library(gridExtra)
+#library(zoo)
+library(grid)
+library(reshape2)
+library(gridBase)
+
+restructure_to_bases_mm10<-function(dat_elements_annot,strand){
+  #prepare coordinate data
+  locus<-str_split_fixed(dat_elements_annot$localCoordinates,":",2)
+  startandend<-str_split_fixed(locus[,2],"-",2)
+  chr<-locus[,1]
+  start<-startandend[,1]
+  end<-startandend[,2]
+  dat_elements_annot$chr<-chr
+  dat_elements_annot$start<-as.numeric(start)
+  dat_elements_annot$end<-as.numeric(end)
+  dat_elements_annot<-dat_elements_annot[which(!is.na(dat_elements_annot$start)),] #elements with no genomic coordinates can be removed here. 
+  
+  #BASES -- melt so that each base (of each oligo) has its own row. --- 5 ratio measurements per base! 
+  basesGenomic<-str_split(dat_elements_annot$Element,"")
+  basesGenomic<-t(as.matrix(as.data.frame(basesGenomic)))
+  basesGenomic<-as.data.frame(basesGenomic)
+  row.names(basesGenomic)<-dat_elements_annot$barcode
+  basesGenomic$barcode<-row.names(basesGenomic)
+  basesGenomicExpanded<-merge(dat_elements_annot,basesGenomic,by.x="barcode",by.y="barcode")
+  
+  Gbases_melted<-melt(basesGenomicExpanded,id.vars=names(basesGenomicExpanded)[1:19])
+  
+  #ID VARS ARE EVERYTHING THAT ARE NOT V1...V90 (BASES)
+  #FIGURE OUT A BETTER WAY TO DO THIS!!! -___-
+  #OTHERWISE, ALWAYS CHECK HERE BC THESE HARD CODED NUMBERS CHANGE EVERY TIME THE OLIGOS CHANGE... 
+  Gbases_melted<-Gbases_melted[order(Gbases_melted$LocalOrder),]
+
+  #COORDS
+  coords<-as.data.frame(dat_elements_annot[,c("start","end")])
+  coords$start<-as.numeric(coords$start)
+  coords$end<-as.numeric(coords$end)
+  coords<-coords[which(!is.na(coords$start)),]
+  
+  basecoordsGenomic<-t(apply(coords,1,function(x) seq.int(from=x[1],to=x[2])))
+  if(strand=="-"){ #count backwards if neg strand #need to make sure coords count DOWN bc on - strand! ###(to associate proper base to proper coord, even tho it will be the complement of the base as viewed in the genome browser!)
+      basecoordsGenomic<-t(apply(coords,1,function(x) seq.int(from=x[2],to=x[1])))
+  }
+  baseCoordsGenomicExpanded<-cbind(dat_elements_annot,basecoordsGenomic)
+  Gbasecoords_melted<-melt(baseCoordsGenomicExpanded,id.vars=names(baseCoordsGenomicExpanded)[1:19])
+  Gbasecoords_melted<-Gbasecoords_melted[order(Gbasecoords_melted$LocalOrder),]
+    #ID VARS ARE EVERYTHING THAT ARE NOT V1...V90 (base coords)
+    #FIGURE OUT A BETTER WAY TO DO THIS!!! -___-
+    # OTHERWISE, ALWAYS CHECK HERE BC THESE HARD CODED NUMBERS CHANGE EVERY TIME THE OLIGOS CHANGE...
+    #ALSO CHECK STRANDING IS RIGHT (Direction of counting...) 
+  
+  
+  Gbases_melted$variable<-NULL
+  names(Gbases_melted)[grep('value',names(Gbases_melted))]<-"Base"
+  genomic<-cbind(Gbases_melted,Gbasecoords_melted[,"value"])
+  names(genomic)[grep('value',names(genomic))]<-"Coord"
+  genomic$uniquePosition<-paste(genomic$chr,genomic$Coord,sep=":")
+  
+  
+  # use unique genomic position (created above) to gather the median ratio
+  # in this script ratio input is shuffled ratio (taken from 1000 selections of [mean of 2 random RNA samples/mean of 3 random DNA replicates]). Now select median (na.rm=TRUE) as representative of all 5 tags for this element. 
+  
+  #genomic_medians_element<-aggregate(ratio~Element,data=genomic,median,na.rm=TRUE)
+  genomic_medians_element<-aggregate(ratio~Element,data=genomic,median,drop=FALSE)
+  names(genomic_medians_element)[grep("ratio",names(genomic_medians_element))]<-"ElementMedianRatio"
+  genomic<-merge(genomic,genomic_medians_element,by.x="Element",by.y="Element",all.x=TRUE)
+  
+  #for bases that are covered by more than one Element due to tiling, report the mean of the two element-wise medians ** (revisit later)
+  #genomic_base_scores<-aggregate(ElementMedianRatio~uniquePosition,data=genomic,mean,na.rm=TRUE)
+  #genomic_base_scores<-aggregate(ElementMedianRatio~uniquePosition,data=genomic,mean,drop=FALSE) #dropping some values... 
+  
+  genomic_base_scores<-cast(genomic,uniquePosition~.,fun=mean)
+  names(genomic_base_scores)<-c("uniquePosition","MeanElementMedianRatio")
+  
+  #reintroduce element,barcode,name,localorder,uniqueposition,base,coord
+  newannotation<-genomic[,c("Element","barcode","name","LocalOrder","uniquePosition","Base","Coord")]
+  newannotation<-ddply(newannotation,.(uniquePosition),head,n=1)
+  new_genomic<-merge(newannotation,genomic_base_scores,by.x="uniquePosition",by.y="uniquePosition")
+  
+  #organize final data and return 
+  new_genomic<-new_genomic[order(new_genomic$Coord),]
+  if(strand=="-"){new_genomic<-new_genomic[order(new_genomic$Coord,decreasing=TRUE),]}
+  # check that localorder 1 is first
+  # check base by base that coord matches base in element (if "-", this will be from end of "element")
+  new_genomic
+}
+
+# sliding window
+# Modified from http://coleoguy.blogspot.com/2014/04/sliding-window-analysis.html
+# similar to rollapply but faster
+# updated to reflect ElementMedianRatio name change 1-10-17
+
+slideFunct <- function(data, window, step){
+  total <- dim(data)[1]
+  window<-as.numeric(window)
+  spots <- seq(from = 1, to = (total - window + 1), by = step)
+  rolledRatio<-vector(length = length(spots))
+  uniquePosition<-vector(length = length(spots))
+  for(i in 1:length(spots)){
+    rolledRatio[i]<-mean(data$MeanElementMedianRatio[spots[i]:(spots[i]+window-1)])
+    uniquePosition[i]<-data$uniquePosition[spots[i]] 
+  }
+  result.df<-as.data.frame(cbind(rolledRatio,uniquePosition))
+  colnames(result.df)<-c("rolledRatio","uniquePosition")
+  result.df$rolledRatio<-as.numeric(as.character(result.df$rolledRatio))
+  return(result.df)
+}
+
+#scan statistic 
+#input<-d, window, step, permutedmatrix, number of randomization used, dat (with bases for peakseq) 
+#output:
+#list: d_bins_copy, ggplot_up, peaklist 
+
+statScanSlideWindows<-function(dat,window,step,permutedMatrix,randomize_reps,strand=strand){
+  #ensure data is properly ordered
+  dat<-dat[order(dat$Coord),]
+  if(strand=="-"){dat<-dat[order(dat$Coord,decreasing=TRUE),]}
+  
+  #assume possible multiple loci input, break into list of loci and do slidefunction on each
+  dfList<-split(dat,dat$name)
+  dfList<-dfList[lapply(dfList,function(x)dim(x)[1])>0]
+  binList<-lapply(dfList,function(x)slideFunct(x,window,step))
+  binList<-do.call("rbind",binList)
+  
+  d_bins<-merge(dat,binList,by.x="uniquePosition",by.y="uniquePosition")
+  rm(binList)
+  rm(dfList)
+  d_bins$chr<-str_split_fixed(d_bins$uniquePosition,":",2)[,1]
+  d_bins$end<-d_bins$Coord+window-1 #will need to correct for if this is out of bounds of the locus
+  d_bins$score<-0
+  d_bins$pval<-0
+
+  #sigUP
+  for(i in seq(1:randomize_reps)){
+    dperm<-dat;
+    dperm$MeanElementMedianRatio<-permutedMatrix[,i]
+    dpermList<-split(dperm,dperm$name)
+    dpermList<-dpermList[lapply(dpermList,function(x)dim(x)[1])>0]
+    dperm_bins<-lapply(dpermList,function(x)slideFunct(x,window,step))
+    dperm_bins<-do.call("rbind",dperm_bins)
+    d_bins$score[which(dperm_bins$rolledRatio>=d_bins$rolledRatio)]<-(d_bins$score[which(dperm_bins$rolledRatio>=d_bins$rolledRatio)]+1)
+    d_bins$pval<-d_bins$score/i
+  }
+  d_bins$sig<-"no"
+  
+  #benjamini hochberg correction!
+  # order pvalues from smallest to largest
+  d_bins<-d_bins[order(d_bins$pval),]
+  #assign ranks 
+  d_bins$pvalrank<-seq(from=1,to=length(d_bins$pval))
+  #calc q vals
+  m=length(d_bins$pval)
+  FDR=0.01 #1% FDR
+  d_bins$BH_qval<-(d_bins$pvalrank/m)*FDR
+  #find largest p<q
+  plessthanq<-d_bins$BH_qval-d_bins$pval #highest ranking positive val 
+  
+  #if any pos values in plessthanq:
+  if(any(plessthanq>0)){
+      cutoff_index<-max(which(plessthanq>0))
+      d_bins$sig[1:cutoff_index]<-"yes"    #everything above this is significant!
+      up_signal<-d_bins[which(d_bins$sig=="yes"),]
+  }else{#else: nothing significant.. 
+    up_signal<-NA
+    }
+  #revert to coordinate-order 
+  d_bins<-d_bins[order(d_bins$Coord),]
+  if(strand=="-"){d_bins<-d_bins[order(d_bins$Coord,decreasing=TRUE),]}
+  
+  #if coord distance < window size from previous coord distance, label as same peak. otherwise increment by 1 
+  
+  d_bins$upPeaks<-factor(paste(d_bins$name,d_bins$sig,sep="_"))
+  peaks_up<-split(d_bins,d_bins$upPeaks)
+  peaks_up<-peaks_up[grep("*yes",names(peaks_up))]
+  
+  
+  peaks_up<-lapply(peaks_up,function(x){
+    length<-dim(x)[1]
+    x$Coord<-as.numeric(as.character(x$Coord))
+    peaknum<-1
+    peakList<-rep(1,length)
+    x<-x[order(x$name,x$Coord),]
+    
+    if(length<=2){
+        if(length==2){
+          if(abs(x$Coord[2]-x$Coord[1])>window){peakList<-c(1,2)} 
+          #if(abs(x$Coord[2]-x$Coord[1])>2*step){peakList<-c(1,2)}
+        }
+        x$peakNums<-peakList
+        x
+    }else{
+      for(i in (2:length)){
+        if(abs(x$Coord[i]-x$Coord[i-1])>window){peaknum<-peaknum+1}
+        peakList[i]<-peaknum
+      }
+      x$peakNums<-as.numeric(as.character(peakList))
+      x
+    }
+  })
+  up<-do.call("rbind",peaks_up)
+  
+  #if up peaks exist, then merge
+  test<-ifelse(length(up)>=1,"TRUE","FALSE")
+  if(test=="TRUE"){
+    d_bins<-merge(d_bins,up[,c("uniquePosition","peakNums")],all.x=TRUE)
+  }else{
+    d_bins$peakNums<-0
+  }
+  rm(up)
+    
+  A<-ggplot(d_bins,aes(xmin=Coord,xmax=Coord+500,ymin=0,ymax=log2(rolledRatio),fill=sig))+geom_rect(aes(width=500))+facet_grid(.~name,scales="free")+theme_bw()
+  #A<-ggplot(d_bins,aes(Coord,log2(rolledRatio),colour=sig))+geom_point()+theme_bw() #+facet_grid(.~name,scales="free")
+
+    
+  d_binsup<-d_bins[order(d_bins$Coord),]
+  
+  d_binsup<-d_binsup[which(d_binsup$peakNums>0),]
+  peaks<-split(d_binsup,d_binsup$peakNums)
+  input_bed<-vector()
+  input_bed<-lapply(peaks,function(x){
+    start<-x[1,7]
+    end<-x[dim(x)[[1]],11]
+    chr<-ifelse(is.na(x[1,10]),"NotGenomic",x[1,10])
+    input_bed<-rbind(input_bed,c(chr,start,end)) #chr, start, end of peak 
+    
+    #start<-x[1,7]
+    #end<-x[dim(x)[[1]],12]
+    #chr<-ifelse(is.na(x[1,11]),"NotGenomic",x[1,11])
+    #input_bed<-rbind(input_bed,c(chr,start,end)) #chr, start, end of peak 
+
+  }
+  )
+  test<-ifelse(length(input_bed)>=1,"TRUE","FALSE")
+  if(test=="TRUE"){
+    input_bed<-as.data.frame(do.call("rbind",input_bed))
+    names(input_bed)<-c("chr","start","end")
+    input_bed<-as.data.frame(input_bed)
+  }else{
+      input_bed<-"NO PEAKS"
+  }
+  return(list(d_bins,A,input_bed))
+  }
+
+```
+
+
+
+
+```{r process_sliding_window_data}
+#really just want the MEDIANS of the individual tag ratios--dont want to do improper comparisons 
+locus_dat$variance<-NULL #when originally wrote this did not have var column so woul dhave to re-write to accomodate this column otherwise this breaks -_- 
+locus_dat$centered_shuffle_ratio<-NULL
+names(locus_dat)[grep("med_shuffle_dat",names(locus_dat))]<-"ratio"
+
+locus_dat<-locus_dat[order(locus_dat$name,locus_dat$LocalOrder),]
+locus_dat_save<-locus_dat
+
+locus_dat_list<-split(locus_dat,locus_dat$name)
+
+
+#build dpermuted matrix by permuting sample labels NOT base position labels... 
+randLabelRatioShuffle<-function(dat_norm_input,shuffle_input,nshuffle,strand,d){
+  dat_norm_input<-dat_norm_input[which(dat_norm_input$barcodes %in% shuffle_input$barcode),]
+  row.names(dat_norm_input)<-dat_norm_input$barcodes
+  dat_norm_input$barcodes<-NULL
+  
+  nshuffle<-as.numeric(nshuffle)
+  
+  #initialize dpermuted_matrix 
+  dpermuted_matrix<-data.frame(row.names=row.names(d))
+  
+  for(i in seq(1:nshuffle)){
+    #pick 2 rna at random
+    rna_curr<-rowMeans(dat_norm_input[,round(runif(2,min=1,max=dim(dat_norm_input)[2]))])
+    #pick 3 vec at random 
+    vec_curr<-rowMeans(dat_norm_input[,round(runif(3,min=1,max=dim(dat_norm_input)[2]))])
+    
+    ratio_curr<-rna_curr/vec_curr
+
+    shuffle_input$ratio<-ratio_curr
+    curr_base_dat<-restructure_to_bases_mm10(shuffle_input,strand)
+    dpermuted_matrix<-cbind(dpermuted_matrix,curr_base_dat$MeanElementMedianRatio)
+    
+  }
+  names(dpermuted_matrix)<-seq(1:nshuffle)
+  dpermuted_matrix
+}
+
+
+
+set.seed(1)
+randomize_reps<-1000
+
+#prod<-lapply(locus_dat_list,function(x){
+#  locus_dat_curr<-x
+#  strand<-locus_dat_curr$strand[[1]]
+#  base_dat<-restructure_to_bases_mm10(locus_dat_curr,strand)
+#  base_dat$strand<-rep(strand,dim(base_dat)[1])
+#  dpermutedMat_curr<-randLabelRatioShuffle(dat_norm,locus_dat_curr,randomize_reps,strand,base_dat)
+#  list(base_dat,dpermutedMat_curr)
+#})
+#all_base_dats_list<-sapply(prod,function(x) x[1])
+#all_loci_d2<-do.call("rbind",all_base_dats_list)
+#all_dperm_list<-sapply(prod,function(x) x[2])
+#all_loci_permutedMat<-do.call("rbind",all_dperm_list)
+
+
+#save(prod,file="/n/rinn_data2/users/agroff/oligogames/HiSeq/2017_lincmRNA_C2C12/analysis/Summary_MPRA_analysis_all_loci_basedatsanddperm.RData")
+
+
+
+
+
+
+#make prod list by reading in individually saved files 
+analysis_dir<-"/Volumes/valor2/users/agroff/oligogames/HiSeq/2017_lincmRNA_C2C12/analysis/"
+base_dats <- list.files(analysis_dir,pattern="*base_dat.RData",full.names=TRUE)
+permMats <- list.files(analysis_dir,pattern="*Matrix.RData",full.names=TRUE)
+filenames_permats<- list.files(analysis_dir,pattern="*Matrix.RData")
+filenames_permats<-unlist(filenames_permats)
+filenames_permats_exp<-as.data.frame(str_split_fixed(filenames_permats,"_",2))
+filenames_permats<-unlist(filenames_permats_exp[,1])
+permMatLists<-lapply(permMats,function(x) mget(load(x)))
+names(permMatLists)<-unlist(filenames_permats)
+
+
+filenames_base<- list.files(analysis_dir,pattern="*base_dat.RData")
+filenames_base<-unlist(filenames_base)
+filenames_base_exp<-as.data.frame(str_split_fixed(filenames_base,"_",2))
+filenames_base<-unlist(filenames_base_exp[,1])
+basedatList<-lapply(base_dats,function(x) mget(load(x)))
+names(basedatList)<-filenames_base
+
+
+myColors<-c(no="black",yes="red")
+
+numOfFiles<-length(filenames_permats)
+output_dbins<-vector("list",numOfFiles)
+output_figs<-vector("list",numOfFiles)
+output_peaks<-vector("list",numOfFiles)
+output_peak_seqs<-vector("list",numOfFiles)
+
+for(i in seq(1,numOfFiles)){
+#for(i in seq(1,2)){
+  curr_file_name<-as.character(filenames_base[i])
+  d<-basedatList[curr_file_name][[1]][[1]]
+  strand<-d$strand[[1]];
+  d$strand<-NULL;
+  dpermutedMatrix<-permMatLists[[curr_file_name]][[1]];
+  print(curr_file_name)
+  out<-statScanSlideWindows(d,500,50,dpermutedMatrix,randomize_reps,strand)
+  output_dbins[i]<-out[1]
+  output_figs[i]<-out[2]
+  peaks_curr<-out[[3]]
+  peaks_curr$name<-curr_file_name
+  output_peaks[i]<-list(peaks_curr) #if this is broken its in statscanwindow--somehow shifted the columns.. 
+  if(length(dim(peaks_curr)[1])>0){
+    peak_seqs_curr<-vector("list",dim(peaks_curr)[1])
+    for(j in seq(1,dim(peaks_curr)[1])){
+        #if strand is negative, do I need to invert? 
+        curr_peak_start_coord<-as.numeric(as.character(peaks_curr$start[j]))
+        curr_peak_end_coord<-as.numeric(as.character(peaks_curr$end[j]))
+    
+        #need to show missing bases in peaks... 
+        #make a df with abs(coordstart-coordend) rows and populate w N
+        peak_seq_df<-data.frame(seq.int(from=curr_peak_start_coord,curr_peak_end_coord),"N")
+        colnames(peak_seq_df)<-c("coords","bases")
+        #grab bases for occuring coords 
+        peak_seq_df2<-merge(d,peak_seq_df,by.x="Coord",by.y="coords",all.y=TRUE)
+        peak_seq_df2$Base<-as.character(peak_seq_df2$Base)
+        peak_seq_df2<-peak_seq_df2[,c("Coord","Base")]
+        peak_seq_df2[is.na(peak_seq_df2)]<-"N"
+  
+        peak_seq_curr<-paste(peak_seq_df2$Base,"",collapse="")
+        peak_seq_curr<-gsub(" ","",peak_seq_curr)
+        if(strand=="-"){
+          peak_vec<-peak_seq_df2$Base
+          rev_peak<-rev(peak_vec)
+          peak_seq_curr<-paste(rev_peak,collapse="")
+        }
+        curr_peak_seq<-list(peak_seq_curr)
+        names(curr_peak_seq)<-paste(curr_file_name,"peak",j,sep="_")
+        peak_seqs_curr[j]<-list(curr_peak_seq)
+    }
+      
+    output_peak_seqs[i]<-list(peak_seqs_curr)
+  }else{
+    output_peak_seqs[i]<-list(c("nopeaks"))
+  }
+  names(output_peak_seqs)[i]<-curr_file_name
+}
+
+
+#DOTS:
+#output_figs[[10]]+ylim(-2,4)+scale_colour_manual(values=myColors)
+#bars:
+#output_figs[[10]]+ylim(-2,4)+scale_fill_manual(values=myColors)
+
+update_figs<-lapply(output_figs,function(x) x+ylim(-2,7)+scale_fill_manual(values=myColors))
+library(gridExtra)
+pdf("011418_all_locus_plots.pdf",height=11,width=24)
+do.call("grid.arrange",update_figs) 
+dev.off()
+
+#pdf(paste(sample,linc,"peaks.pdf",sep="_"))
+#outputList[[2]]+ggtitle(paste(linc, "window 500, step 50"))+geom_vline(xintercept=TSS_coords)+ylim(-2,4)+scale_fill_manual(values=myColors)
+#dev.off()
+
+#d_bins<-outputList[[1]]
+#sigregions<-d_bins[which(d_bins$sig=="yes"),]
+#meansig<-mean(sigregions$rolledRatio,na.rm=TRUE)
+#maxsig<-max(sigregions$rolledRatio,na.rm=TRUE)
+
+#`r locus` mean sig value: `r meansig`
+#`r locus` max sig value: `r maxsig`
+
+
+#concatenate all outputLists[[3]] to get bed of mm10 peaks -- get DNA from ucsc and run fimo together 
+output_peaks[5]<-NULL #foxf1 no peaks 
+peakslist<-do.call("rbind",output_peaks)
+peakslist$start<-as.numeric(as.character(peakslist$start))
+peakslist$end<-as.numeric(as.character(peakslist$end))
+peakslist$length<-abs(peakslist$start-peakslist$end)
+peakslist$type<-"mRNA"
+peakslist$type[which(peakslist$name %in% c("Peril","Crnde","Fendrr","Lincenc1","Lincp21","Tug1"))]<-"lincRNA"
+num<-split(peakslist,peakslist$type)
+peak_nums<-lapply(num,dim)
+meanLengths<-aggregate(peakslist,by=list(peakslist$type),mean)
+
+peaknums<-as.data.frame(peak_nums)
+peaknums2<-peaknums[1,]
+peaknums<-peaknums2
+peaknums.melt<-melt(peaknums)
+pdf("peaknums.pdf")
+ggplot(peaknums.melt,aes(variable,value,fill=variable))+geom_bar(stat="identity")+theme_bw()+scale_fill_manual(values=c("lincRNA"="red","mRNA"="black"))
+dev.off()
+
+pdf("peaklength.pdf")
+ggplot(peakslist,aes(type,length,colour=type))+geom_boxplot()+theme_bw()+scale_colour_manual(values=c("lincRNA"="red","mRNA"="black"))
+dev.off()
+```
+
+
+
+
+# MPRA Summary trend analysis- CDFs 
+Setup/load data 
+
+```{r setup, include=FALSE}
+.libPaths( c("/n/home06/agroff/R/x86_64-unknown-linux-gnu-library/3.3",.libPaths()))
+library(knitr)
+library(rmarkdown)
+library(ggplot2)
+library(reshape)
+library(plyr)
+library(Biobase)
+library(stringr)
+library(reshape2)
+
+opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE,fig.height=8, fig.width=8, dev=c('png', 'pdf'))
+
+data_counts_orig<-read.table("/Volumes/valor2/users/agroff/oligogames/HiSeq/2017_lincmRNA_C2C12/analysis/C2C12_lincmRNA_combined_Jan2017_hiseq.tab",header=TRUE,stringsAsFactors = FALSE)
+annotation<-read.table("/Volumes/valor2/users/agroff/oligogames/HiSeq/2017_lincmRNA_C2C12/analysis/lincmRNA_pool_annotation_updated_promotersinloci.txt",header=TRUE,stringsAsFactors = FALSE)
+locus_TSS<-read.table("/Volumes/valor2/users/agroff/oligogames/HiSeq/2017_lincmRNA_C2C12/analysis/lincmRNA_TSSs.txt",header=TRUE,stringsAsFactors = FALSE,sep="\t")
+
+threshold<-10 
+
+QC.dat.annot<-merge(annotation,data_counts_orig,by.x="barcode",by.y="barcodes")
+
+normalize_andcenter<-function(dat,threshold){
+  dat2<-as.matrix(dat[,2:dim(dat)[2]])
+  dat2[dat2<threshold]<-NA
+  repsums<-colSums(dat2,na.rm=TRUE)
+  dat_norm<-t(t(dat2)/repsums)
+  medians<-apply(dat_norm,2,median,na.rm=TRUE)
+  dat_norm2<-t(t(dat_norm)/medians)
+  dat<-cbind(dat["barcodes"],dat_norm2)
+  #namesfordat<-c("barcodes",names(dat_norm))
+  as.data.frame(dat)
+  #names(dat)<-namesfordat
+  #dat
+}
+#dat_norm<-normalize(data_counts_touse,threshold)
+dat_norm<-normalize_andcenter(data_counts_orig,threshold)
+set.seed(1)
+
+```
+
+Get ratios
+
+```{r getratios}
+dat_norm2<-dat_norm[,1:11]
+colnames(dat_norm2)<-c("barcodes","C2C12_1","C2C12_2","C2C12_3","C2C12_4","C2C12_5","VEC_1","VEC_2","VEC_3","VEC_4","VEC_5")
+dat_norm<-dat_norm2;rm(dat_norm2)
+dat_norm.melt<-melt(dat_norm)
+
+info<-str_split_fixed(dat_norm.melt$variable,"_",2)
+dat_norm.melt$sampletype<-info[,1]
+dat_norm.melt$replicate<-info[,2]
+
+
+RowVar <- function(x) {
+  ans<-sum((x - mean(x,na.rm=TRUE)^2),na.rm=TRUE)/(length(x) - 1)
+  ans
+}
+
+#change name to eventually make function 
+names(dat_norm)<-gsub("C2C12","RNA",names(dat_norm))
+names(dat_norm)<-gsub("lincmRNAvec","VEC",names(dat_norm))
+
+RNA<-dat_norm[,grep("RNA",names(dat_norm))]
+row.names(RNA)<-dat_norm$barcodes
+VEC<-dat_norm[,grep("VEC",names(dat_norm))]
+row.names(VEC)<-dat_norm$barcodes
+
+
+# if tag not present in all vector samples, remove before continuing 
+vec_na_sum<-rowSums(is.na(VEC))
+tags_present<-which(vec_na_sum<dim(VEC)[2])
+dat_norm<-dat_norm[tags_present,]
+
+
+#shuffle 
+randRatioShuffle<-function(dat,nshuffle){
+  vec<-dat[,grep('vec',names(dat),ignore.case=TRUE)]
+  row.names(vec)<-dat$barcodes
+  rna<-dat[,grep('vec',names(dat),ignore.case=TRUE,invert=TRUE)]
+  row.names(rna)<-rna$barcodes
+  rna$barcodes<-NULL
+  
+  nshuffle<-as.numeric(nshuffle)
+  #initialize ratio_output_dataframe 
+  ratio_output_dataframe<-data.frame(row.names=row.names(rna))
+  rna_out<-data.frame(row.names=row.names(rna))
+  vec_out<-data.frame(row.names=row.names(vec))
+  rna<-as.matrix(rna)
+  vec<-as.matrix(vec)
+  for(i in seq(1:nshuffle)){
+    #pick 2 rna at random
+    rna_curr<-rowMedians(rna[,sample(1:dim(rna)[2],2)])
+    #pick 3 vec at random 
+    vec_curr<-rowMedians(vec[,sample(1:dim(vec)[2],3)])
+    ratio_curr<-rna_curr/vec_curr
+    ratio_output_dataframe<-cbind(ratio_output_dataframe,ratio_curr)
+    rna_out<-cbind(rna_out,rna_curr)
+    vec_out<-cbind(vec_out,vec_curr)
+  }
+  names(ratio_output_dataframe)<-seq(1:nshuffle)
+  #rna_sd<-apply(rna_out,1,sd)
+  #vec_sd<-apply(rna_out,1,sd)
+  #rna_mean<-rowMeans(rna_out)
+  #vec_mean<-rowMeans(vec_out)
+  #cov_rna_vec<-diag(cov(t(rna_out),t(vec_out))) #row-wise covariance of rna,vec
+  #var_ratio<-(rna_mean^2/vec_mean^2)*((rna_sd^2/rna_mean^2)-(2*cov_rna_vec/(rna_mean*vec_mean))+(vec_sd^2/vec_mean^2))
+  #var_ratio<-var(ratio_output_dataframe)
+  #list(ratio_output_dataframe,var_ratio)
+  as.data.frame(ratio_output_dataframe)
+}
+datratioshuffle<-randRatioShuffle(dat_norm,1000)
+med_shuffle_dat<-rowMedians(as.matrix(datratioshuffle),na.rm=TRUE)
+med_shuffle_dat<-as.data.frame(med_shuffle_dat)
+var_shuffle_dat<-apply(datratioshuffle,1,var)
+var_shuffle_dat<-as.data.frame(var_shuffle_dat)
+row.names(med_shuffle_dat)<-row.names(datratioshuffle)
+med_shuffle_dat$barcodes<-row.names(datratioshuffle)
+med_shuffle_dat$var<-var_shuffle_dat$var_shuffle_dat
+shuffle.annot<-merge(annotation,med_shuffle_dat,by.x="barcode",by.y="barcodes")
+shuffle.annot$type<-"signal"
+shuffle.annot$type[grep("promoter",shuffle.annot$name,ignore.case=TRUE)]<-"promoter"
+shuffle.annot$type[grep("scramble",shuffle.annot$name,ignore.case=TRUE)]<-"scramble"
+locus_shuffle_annot_save<-shuffle.annot
+```
+
+TSS labels 
+
+```{r TSS_labels}
+locus_TSS<-read.table("/Volumes/valor2/users/agroff/oligogames/HiSeq/2017_lincmRNA_C2C12/analysis/lincmRNA_TSSs.txt",header=TRUE,stringsAsFactors = FALSE,sep="\t")
+locus_TSS<-locus_TSS[order(locus_TSS$chr,locus_TSS$TSS_coord),]
+locus_TSS$name<-gsub(";","",locus_TSS$name)
+
+#oligos_dat2<-shuffle.annot[which(shuffle.annot$med_shuffle_dat>2),]
+oligos_dat2<-shuffle.annot
+oligos_dat2<-oligos_dat2[grep("promoter|scramble|Super",oligos_dat2$name,invert=TRUE),]
+oligos_dat2$genename<-str_split_fixed(oligos_dat2$name,"_",3)[,1]
+oligos_dat2$genename<-gsub("Enc1","Enc1_mm10_refGene",oligos_dat2$genename)
+
+#label multiple TSSs 
+locus_TSS$uniqueTSSID<-seq(1,dim(locus_TSS)[1])
+
+#merge tss by genename in oligos_dat
+oligodat2<-merge(oligos_dat2,locus_TSS,by.x="genename",by.y="name",all=TRUE)
+coords<-str_split_fixed(oligodat2$localCoordinates,":",2)[,2]
+oligodat2$localstart<-str_split_fixed(coords,"-",2)[,1]
+
+#handle strandedness 
+strands<-split(oligodat2,oligodat2$strand.x)
+
+negstrandoligos<-strands[[1]]
+negstrandoligos$distance<-as.numeric(as.character(negstrandoligos$TSS_coord))-as.numeric(as.character(negstrandoligos$localstart))
+posstrandoligos<-strands[[2]]
+posstrandoligos$distance<-as.numeric(as.character(posstrandoligos$localstart))-as.numeric(as.character(posstrandoligos$TSS_coord))
+
+oligodat3<-rbind(negstrandoligos,posstrandoligos)
+oligodat3$location<-"far"
+oligodat3$location[which(oligodat3$distance<0 & oligodat3$distance>(-1000))]<-"near"
+#oligodat3$location[which(oligodat3$distance<0 & oligodat3$distance>(-500))]<-"near"
+oligodat3<-oligodat3[order(oligodat3$location,oligodat3$distance,decreasing=TRUE),]
+oligodat3<-ddply(oligodat3,.(barcode),head,1)
+oligodat3<-oligodat3[order(oligodat3$distance),]
+
+#combine, sort so all nears appear first, and then again keep only one observation per element 
+#(ie either near any tss, or not)
+
+oligodat3$genetype<-"NA"
+oligodat3$genetype[grep("Lincenc1|Lincp21|Fendrr|Tug1|Crnde|Peril",oligodat3$genename)]<-"lincRNA"
+oligodat3$genetype[grep("Morc2a|Cdkn1a|Foxf1|Sox2|Enc1_mm10|Irx5",oligodat3$genename)]<-"mRNA"
+
+#all oligos within 500bp of a TSS vs 1000 (either side) or more 
+oligodat3$disbins<-"genebody"
+oligodat3$disbins[which(abs(oligodat3$distance)<=1000)]<-"promoter"
+
+#oligodat3$expressed<-"Expressed"
+#oligodat3$expressed[grep("Lincp21|Lincenc1|Peril|Fendrr|Sox2|Irx5|Foxf1",oligodat3$genename)]<-"NotExpressed"
+
+```
+
+CDFs
+
+```{r cdfs}
+#cdf signal linc or mRNA promoter or not 
+#pdf("lincvmRNA_genebodyvpromoter_cdf.pdf")
+#ggplot(oligodat3, aes(log2(med_shuffle_dat),colour=disbins)) + stat_ecdf(geom = "step") + facet_wrap(~genetype)+theme_bw()+ggtitle("lincrna v mrna")+scale_colour_manual(values=c("promoter"="black","genebody"="grey"))
+#dev.off()
+
+#pdf("lincvmRNA_genebodyvpromoter_zoom_cdf.pdf")
+#ggplot(oligodat3, aes(log2(med_shuffle_dat),colour=disbins)) + stat_ecdf(geom = "step") + facet_wrap(~genetype)+theme_bw()+ggtitle("lincrna v mrna")+scale_colour_manual(values=c("promoter"="black","genebody"="grey"))+coord_cartesian(xlim = c(-1,1))
+#dev.off()
+#ggplot(oligodat3, aes(disbins,log2(med_shuffle_dat),colour=disbins)) + geom_violin()+ facet_wrap(~genetype)+theme_bw()+ggtitle("lincrna v mrna")+scale_colour_manual(values=c("promoter"="black","genebody"="grey"))#+coord_cartesian(ylim = c(-1,1))
+
+pdf("lincvmRNA_genebodyvpromoter_boxplots.pdf")
+ggplot(oligodat3, aes(disbins,log2(med_shuffle_dat),colour=disbins)) + geom_boxplot(notch=TRUE)+ facet_wrap(~genetype)+theme_bw()+ggtitle("lincrna v mrna")+scale_colour_manual(values=c("promoter"="black","genebody"="grey"))#+coord_cartesian(ylim = c(-1,1))
+dev.off()
+
+
+
+
+
+#ks.test promoter v genebody mRNA
+mRNAs<-oligodat3[which(oligodat3$genetype=="mRNA"),]
+#ks.test(mRNAs[which(mRNAs$disbins=="promoter"),"med_shuffle_dat"],mRNAs[which(mRNAs$disbins=="genebody"),"med_shuffle_dat"])
+#reject! these distributions are not equal 
+
+#ks.test promoter v genebody lincRNA
+lincRNAs<-oligodat3[which(oligodat3$genetype=="lincRNA"),]
+#ks.test(lincRNAs[which(lincRNAs$disbins=="promoter"),"med_shuffle_dat"],lincRNAs[which(lincRNAs$disbins=="genebody"),"med_shuffle_dat"])
+
+```
+
+
+```{r sessioninfo}
+sessionInfo()
+```
+
+
+
+Fimo Plot each tissue
+
+```{r fimoplot_c2c12_example}
+
+nameconversiontable<-read.table("Core_Jaspar_nameConversionTable.txt")
+names(nameconversiontable)<-c("motifname","name")
+nameconversiontable$motifname<-gsub(">","",nameconversiontable$motifname)
+
+
+C2C12fimo<-read.table("C2C12/fimo.txt",header=FALSE)
+names(C2C12fimo)<-c("motif","seq","start","end","strand","NA","pvalue","qvalue","matchedseq")
+C2C12fimo$sample<-"C2C12"
+C2C12fimo$uniqueID<-paste(C2C12fimo$motif,C2C12fimo$start,sep="_")
+
+brainfimo<-read.table("BRAIN/fimo.txt",header=FALSE)
+names(brainfimo)<-c("motif","seq","start","end","strand","NA","pvalue","qvalue","matchedseq")
+brainfimo$sample<-"WholeBrain"
+brainfimo$uniqueID<-paste(brainfimo$motif,brainfimo$start,sep="_")
+
+
+GEOBfimo<-read.table("GEOB/fimo.txt",header=FALSE)
+names(GEOBfimo)<-c("motif","seq","start","end","strand","NA","pvalue","qvalue","matchedseq")
+GEOBfimo$sample<-"GEOB"
+GEOBfimo$uniqueID<-paste(GEOBfimo$motif,GEOBfimo$start,sep="_")
+
+
+kidneyfimo<-read.table("Kidney/fimo.txt",header=FALSE)
+names(kidneyfimo)<-c("motif","seq","start","end","strand","NA","pvalue","qvalue","matchedseq")
+kidneyfimo$sample<-"Kidney"
+kidneyfimo$uniqueID<-paste(kidneyfimo$motif,kidneyfimo$start,sep="_")
+
+
+
+mESCfimo<-read.table("mESC/fimo.txt",header=FALSE)
+names(mESCfimo)<-c("motif","seq","start","end","strand","NA","pvalue","qvalue","matchedseq")
+mESCfimo$sample<-"mESC"
+mESCfimo$uniqueID<-paste(mESCfimo$motif,mESCfimo$start,sep="_")
+
+
+all_samples<-rbind(C2C12fimo,brainfimo,GEOBfimo,kidneyfimo,mESCfimo)
+
+fimores_annot<-merge(all_samples,nameconversiontable,by.x="motif",by.y="motifname")
+fimores_annot$motifwidth<-with(fimores_annot,end-start)
+
+ggplot(fimores_annot,aes(start,name,fill=qvalue))+geom_tile(width=fimores_annot$motifwidth)+theme_bw()+facet_wrap(~sample)
+
+
+pdf("motifs_peril_peak3_eachsampletype_q0-05.pdf")
+ggplot(subset(fimores_annot,qvalue<0.05),aes(start,name,fill=qvalue,width=motifwidth))+geom_tile()+theme_bw()+facet_wrap(~sample)
+dev.off()
+
+
+#############################
+
+#which motifs occur in both C2C12 and Kidney? 
+C2C12_and_kidney<-C2C12fimo[which(C2C12fimo$uniqueID %in% kidneyfimo$uniqueID),]
+C2C12_and_kidney_annot<-merge(C2C12_and_kidney,nameconversiontable,by.x="motif",by.y="motifname")
+C2C12_and_kidney_annot$motifwidth<-with(C2C12_and_kidney_annot,end-start)
+
+#kidney_and_C2C12<-kidneyfimo[which(kidneyfimo$uniqueID %in% C2C12fimo$uniqueID),]#sanitycheck
+subset(C2C12_and_kidney_annot,qvalue<0.05)
+ggplot(C2C12_and_kidney_annot,aes(start,name,fill=qvalue))+geom_tile(width=C2C12_and_kidney_annot$motifwidth)+theme_bw()
+ggplot(subset(C2C12_and_kidney_annot,qvalue<0.05),aes(start,name,fill=qvalue,width=motifwidth))+geom_tile()+theme_bw()
+
+
+###########################################
+# which motifs occur in all samples? 
+in_all_samples<-intersect(C2C12_and_kidney$uniqueID,intersect(mESCfimo$uniqueID,intersect(GEOBfimo$uniqueID,brainfimo$uniqueID)))
+common_motifs<-C2C12_and_kidney_annot[which(C2C12_and_kidney_annot$uniqueID %in% in_all_samples),]
+common_motifs$motifwidth<-with(common_motifs,end-start)
+
+subset(common_motifs,qvalue<0.05)
+
+
+ggplot(common_motifs,aes(start,name,fill=qvalue))+geom_tile(width=common_motifs$motifwidth)+theme_bw()
+
+pdf("Common_motifs_PerilPeak3_q0-05.pdf")
+ggplot(subset(common_motifs,qvalue<0.05),aes(start,name,fill=qvalue,width=motifwidth))+geom_tile()+theme_bw()
+dev.off()
+```
