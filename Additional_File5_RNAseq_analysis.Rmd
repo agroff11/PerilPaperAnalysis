@@ -1,0 +1,426 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+New fig 3
+
+```{r opts,echo=FALSE}
+.libPaths( c("/n/home06/agroff/R/x86_64-unknown-linux-gnu-library/3.3",.libPaths()))
+library(knitr)
+library(rmarkdown)
+opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE,fig.height=8, fig.width=8,fig.path ="images", dev=c('png', 'pdf'))
+```
+
+```{r setup}
+library(ggplot2)
+library(reshape)
+library(plyr)
+library(Biobase)
+library(stringr)
+library(reshape2)
+library(DESeq2)
+library(tximport)
+library(readr)
+```
+
+
+```{r loaddata,echo=FALSE}
+rsem_count_dir<-"/Volumes/valor2/users/agroff/seq/PERIL/rsem_alignments/"
+files <- list.files(rsem_count_dir,pattern="*.genes.results",full.names=TRUE)
+filenames<-list.files(rsem_count_dir,pattern="*.genes.results")
+# metadata! 
+metadata<-read.table("/Volumes/valor2/users/agroff/seq/PERIL/analysis/rsem/metadata.txt",header=TRUE,stringsAsFactors = FALSE)
+files <- list.files(rsem_count_dir,pattern="*.genes.results",full.names=TRUE)
+samples <- list.files(rsem_count_dir,pattern="*.genes.results")
+samples<-gsub(".genes.results","",samples)
+names(files) <- samples
+files<-files[names(files) %in% metadata$ProcessingID]
+tx2gene<-read.table("/Volumes/valor2/users/agroff/seq/PERIL/analysis/rsem/tx2gene_murine.tab",header=TRUE)
+short_annot<-read.table("/Volumes/valor2/users/agroff/seq/PERIL/annotation/mm10_andlacz_annotation.tab",header=TRUE)
+```
+
+
+```{r diffs}
+### ALL ####
+curr_diff<-metadata[grep("WholeBrain|Kidney|mESC|GEOB",metadata$Tissue),]
+curr_files<-files[names(files) %in% curr_diff$ProcessingID]
+rownames(curr_diff)<-curr_diff$ProcessingID
+curr_txi <- tximport(curr_files, type="rsem", tx2gene=tx2gene,abundanceCol=TPM)#, reader=read_tsv)
+
+#num_exp_transcripts
+binary<-TPMs2
+binary[binary>1]<-1
+binary[binary<1]<-0
+binary_sums<-colSums(binary)
+
+curr_txi$length<-curr_txi$length+1
+curr_diff$Genotype<-factor(curr_diff$Genotype)
+curr_diff$Sex<-factor(curr_diff$Sex)
+curr_diff$Tissue<-factor(curr_diff$Tissue)
+ddsTxi <- DESeqDataSetFromTximport(curr_txi, colData=curr_diff,design=~Tissue+Genotype) #MWT v FKO -__- 
+tissue<-"ALL"
+dds<-ddsTxi
+#nrow(dds)
+dds <- dds[ rowSums(counts(dds)) > 1, ]
+#nrow(dds)
+dds$group <- factor(paste0(dds$Tissue, dds$Genotype))
+design(dds)<- ~group
+dds<-estimateSizeFactors(dds)
+
+dds<-DESeq(dds)
+#resultsNames(dds)
+kidney<-results(dds,contrast=c("group","KidneyKO","KidneyWT"),alpha=0.05) 
+#log2 fold change (MAP): group KidneyKO vs KidneyWT 
+kidney$comparison<-"Kidney"
+mESC<-results(dds,contrast=c("group","mESCKO","mESCWT"),alpha=0.05) 
+mESC$comparison<-"mESC"
+GEOB<-results(dds,contrast=c("group","GEOBKO","GEOBWT"),alpha=0.05)
+GEOB$comparison<-"GEOB"
+brain<-results(dds,contrast=c("group","WholeBrainKO","WholeBrainWT"),alpha=0.05) 
+brain$comparison<-"WholeBrain"
+kidneysig<-kidney[which(kidney$padj<0.05),]
+mESCsig<-mESC[which(mESC$padj<0.05),]
+GEOBsig<-GEOB[which(GEOB$padj<0.05),]
+brainsig<-brain[which(brain$padj<0.05),]
+kidneysigdf<-as.data.frame(kidney[which(kidney$padj<0.05),])
+kidneysigdf$comparison<-"kidney"
+kidneysigdf$info<-row.names(kidneysigdf)
+mESCsigdf<-as.data.frame(mESC[which(mESC$padj<0.05),])
+mESCsigdf$comparison<-"mESC"
+mESCsigdf$info<-row.names(mESCsigdf)
+GEOBsigdf<-as.data.frame(GEOB[which(GEOB$padj<0.05),])
+GEOBsigdf$comparison<-"GEOB"
+GEOBsigdf$info<-row.names(GEOBsigdf)
+brainsigdf<-as.data.frame(brain[which(brain$padj<0.05),])
+brainsigdf$comparison<-"brain"
+brainsigdf$info<-row.names(brainsigdf)
+dat<-rbind(kidneysigdf,mESCsigdf,GEOBsigdf,brainsigdf,make.row.names=FALSE)
+dat$genenames<-str_split_fixed(dat$info,"_",2)[,2]
+sig_genenames<-unique(dat$genenames)
+```
+
+# Cisplots 
+
+```{r cisplots}
+dat<-rbind(kidney,mESC,GEOB,brain)#,make.row.names=FALSE)
+dat$txname<-str_split_fixed(row.names(dat),"_",2)[,1]
+dat$genename<-str_split_fixed(row.names(dat),"_",2)[,2]
+
+txn_chr_info<-merge(tx2gene,short_annot[,c("chr","txname")],by.x="TXN_NAME",by.y="txname")
+chr3<-short_annot[which(short_annot$chr=="chr3"),]
+
+peril_tss=34764156 # on chr3, mm10
+window=2000000
+
+peril_region<-chr3[which((chr3$start>=peril_tss-window)&(chr3$end<=peril_tss+window)),]
+
+comb_dat<-as.data.frame(merge(dat,peril_region,by.x="txname","txname"))
+comb_dat$start<-as.numeric(as.character(comb_dat$start))
+
+comb_dat$start<-comb_dat$start-peril_tss
+comb_dat$sig<-"no"
+comb_dat$sig[comb_dat$padj<0.05]<-"yes"
+
+#pdf("Peril_region_cisplots_deseq)WToverKO_alpha05.pdf")
+ggplot(comb_dat,aes(start,log2FoldChange,colour=sig,label=genename))+geom_point()+theme_bw()+scale_colour_manual(values=c("yes"="red","no"="black"))+geom_text(data=subset(comb_dat, sig=='yes'))+geom_vline(xintercept=0)+facet_wrap(~comparison)
+#dev.off()
+
+```
+
+
+
+# TPMs
+```{r TPMs}
+#Sig scatters, using TPM 
+tpm_files<-lapply(curr_files,read.table,header=TRUE)
+expression_info<-lapply(tpm_files,function(x){
+  #newx<-x[grep("Sox2|Peril",x$gene_id),]
+  newx<-x[,c("gene_id","TPM")]
+  newx
+})
+exp_info2<-lapply(seq_along(expression_info),function(x){
+  new<-expression_info[[x]]
+  new$samplename<-names(expression_info)[x]
+  as.data.frame(new)
+})
+expression_info<-do.call("rbind",exp_info2)
+expression_info$genename<-str_split_fixed(expression_info$gene_id,"_",2)[,2]
+expression_annot<-merge(expression_info,metadata,by.x="samplename",by.y="ProcessingID")
+expression_annot$mergecol<-paste(expression_annot$Tissue,expression_annot$genename,sep="_")
+
+library(data.table)
+expression_annot_dt<-data.table(expression_annot)
+expression_annot_dt$gene_id<-gsub("Velocigene_","",expression_annot_dt$gene_id)
+expression_annot_dt$infocondition<-paste(expression_annot_dt$gene_id,expression_annot_dt$Tissue,expression_annot_dt$Geno,sep="_")
+#wide_expression_annot_tpm<-dcast(expression_annot_dt,gene_id+genename+Genotype+Sex+Tissue+infocondition+mergecol~samplename,value.var="TPM")
+#wide_expression_annot_tpm<-dcast(expression_annot_dt,genename+Genotype+Tissue~samplename,value.var="TPM")
+wide_expression_annot_tpm<-dcast(expression_annot_dt,gene_id~samplename,value.var="TPM")
+replicateTPMtable<-wide_expression_annot_tpm
+
+mean_TPM<-expression_annot_dt[,.(mean(TPM)),by=(infocondition)]
+sd_TPM<-expression_annot_dt[,.(sd(TPM)),by=(infocondition)]
+names(mean_TPM)<-c("infocondition","mean_TPM")
+names(sd_TPM)<-c("infocondition","sd_TPM")
+
+#break condition into tissue/genotype 
+info_condition<-str_split_fixed(mean_TPM$infocondition,"_",4)
+names(info_condition)<-c("txID","genename","Tissue","Genotype")
+countdat<-cbind(info_condition,mean_TPM)
+countdat<-as.data.frame(countdat)
+countdat$V1[grep("LacZ",countdat$V2)]<-"Velocigene_LacZ"
+countdat_comb_dat<-as.data.frame(merge(countdat,short_annot,by.x="V1","txname"))
+countdat_comb_dat$V1<-gsub("Velocigene_","",countdat_comb_dat$V1)
+countdat_comb_dat$mergecol<-paste(countdat_comb_dat$V3,countdat_comb_dat$V1,sep="_")
+info_condition2<-as.data.frame(str_split_fixed(sd_TPM$infocondition,"_",4))
+names(info_condition2)<-c("txID","genename","Tissue","Genotype")
+countdat2<-cbind(info_condition2,sd_TPM$sd_TPM)
+names(countdat2)<-c("txID","genename","Tissue","Genotype","sd_TPM")
+countdat2$infocondition<-paste(countdat2$txID,countdat2$genename,countdat2$Tissue,countdat2$Genotype,sep="_")
+
+countdat_comb_dat<-countdat_comb_dat[,c("infocondition","mean_TPM")]
+countdat_comb_dat2<-as.data.frame(merge(countdat_comb_dat,countdat2,by.x="infocondition",by.y="infocondition"))
+countdat_comb_dat2$mergecol<-paste(countdat_comb_dat2$Tissue,countdat_comb_dat2$genename,sep="_")
+countdat_comb_dat<-countdat_comb_dat2
+countdat_comb_dat$mean_TPM<-as.numeric(as.character(countdat_comb_dat$mean_TPM))
+countdat_comb_dat$sd_TPM<-as.numeric(as.character(countdat_comb_dat$sd_TPM))
+
+```
+
+
+Mccc1 and Exosc9 expression:
+
+```{r Mccc1andExosc9Expression}
+genes<-countdat_comb_dat[grep("Exosc9|Mccc1",countdat_comb_dat$genename),]
+genes<-genes[,c("genename","Tissue","Genotype","sd_TPM","mean_TPM")]
+names(genes)<-c("genename","Tissue","Geno","sd","mean")
+genes<-genes[order(genes$genename,genes$Tissue,genes$Geno,decreasing=TRUE),]
+genes$label<-with(genes,paste(Tissue,Geno,sep="_"))
+genes$label<-factor(genes$label,levels=genes$label)
+limits<-aes(ymin=mean-sd,ymax=mean+sd)
+
+pdf("Exosc9andMccc1_tpms.pdf")
+ggplot(genes,aes(label,mean,fill=Geno))+geom_bar(stat="identity")+theme_bw()+facet_wrap(~genename,scales="free")+theme(axis.text.x = element_text(angle = 90, hjust = 1))+geom_errorbar(limits)+scale_fill_manual(values=c("WT"="black","KO"="grey"))
+dev.off()
+
+```
+
+Peril and LacZ expression 
+
+```{r PerilAndLacZExpression}
+genes<-countdat_comb_dat[grep("LacZ|Peril",countdat_comb_dat$genename),]
+genes<-genes[,c("genename","Tissue","Genotype","sd_TPM","mean_TPM")]
+names(genes)<-c("genename","Tissue","Geno","sd","mean")
+genes<-genes[order(genes$genename,genes$Tissue,genes$Geno,decreasing=TRUE),]
+genes$label<-with(genes,paste(Tissue,Geno,sep="_"))
+genes$label<-factor(genes$label,levels=genes$label)
+limits<-aes(ymin=mean-sd,ymax=mean+sd)
+
+pdf("PerilandLacZ_tpms.pdf")
+ggplot(genes,aes(label,mean,fill=Geno))+geom_bar(stat="identity")+theme_bw()+facet_wrap(~genename,scales="free")+theme(axis.text.x = element_text(angle = 90, hjust = 1))+geom_errorbar(limits)+scale_fill_manual(values=c("WT"="black","KO"="grey"))
+dev.off()
+
+```
+
+
+Tracks! From each 
+
+
+```{r tracks, include=FALSE}
+#knitr::opts_chunk$set(echo = TRUE)
+
+#.libPaths( c("/n/home06/agroff/R/x86_64-unknown-linux-gnu-library/3.3",.libPaths()))
+
+#dir<-"/Volumes/valor2/users/agroff/seq/PERIL/data/diffs/ALL"
+dir<-"/Volumes/valor2/users/agroff/seq/PERIL/data/diffs/ALL"
+
+strain<-"Peril"
+gene_name<-"Peril"
+# Set knitr opts
+alpha<-0.05
+analysisdir<-"/Volumes/valor2/users/agroff/seq/PERIL/analysis/"
+diffdir<-"/Volumes/valor2/users/agroff/seq/PERIL/data/diffs/"
+GTF <- "/Volumes/valor2/users/agroff/annotation/mm10/mm10_gencode_vM2_with_lncRNAs_and_LacZ.gtf"
+genome<-"mm10"
+
+library(cummeRbund)
+library(xtable)
+library(limma)
+library(GSA)
+library(marray)
+library(ggplot2)
+library(gtable)
+library(gridExtra)
+library(RColorBrewer)
+library(RMySQL)
+
+deletionCoords<-read.table("/Volumes/valor2/users/agroff/seq/PERIL/analysis/mm10DeletionCoords.txt",sep="\t",header=TRUE,stringsAsFactors=FALSE)
+colnames(deletionCoords)<-c("gene_name","gene_region","deletionRegion")
+
+cuff<-readCufflinks(dir=dir,gtfFile="/Volumes/valor2/users/agroff/annotation/mm10/mm10_gencode_vM2_with_lncRNAs_and_LacZ.gtf",genome=genome)
+reps<-replicates(cuff)
+files<-lapply(reps$file,function(x){strsplit(x, "/")})
+
+#field 9 will be JR number 
+files<-as.data.frame(files)
+samples<-(t(files[10,]))
+rownames(samples)<-NULL
+
+name<-strain
+#myGene<-getGene(cuff,name)
+#save(myGene,file="PerilGeneAll.RData")
+
+#load("/Volumes/valor2/users/agroff/seq/PERIL/analysis/PerilGeneAll.RData")
+load("/Volumes/valor2/users/agroff/seq/PERIL/analysis/PerilGeneAll.RData")
+
+library(GenomicFeatures)
+real_chromInfo<-read.table("/Volumes/valor2/users/agroff/Brainmap/BrainMap/abbie_annotation/mm10_brainmap.chrom.info",header=TRUE)
+genome<-"mm10"
+
+mm10DB<-loadDb("/Volumes/valor2/users/agroff/Brainmap/BrainMap/analysis/mm10gencode_brainmapDB_nolacz.sqlite")
+
+mm10DB<-loadDb("/Volumes/valor2/users/agroff/Brainmap/BrainMap/analysis/mm10gencode_brainmapDB_nolacz.sqlite")
+
+movingAverage <- function(x, n=10, centered=TRUE) {
+  
+  if (centered) {
+    before <- floor  ((n-1)/2)
+    after  <- ceiling((n-1)/2)
+  } else {
+    before <- n-1
+    after  <- 0
+  }
+  
+  # Track the sum and count of number of non-NA items
+  s     <- rep(0, length(x))
+  count <- rep(0, length(x))
+  
+  # Add the centered data
+  new <- x
+  # Add to count list wherever there isn't a
+  count <- count + !is.na(new)
+  # Now replace NA_s with 0_s and add to total
+  new[is.na(new)] <- 0
+  s <- s + new
+  
+  # Add the data from before
+  i <- 1
+  while (i <= before) {
+    # This is the vector with offset values to add
+    new   <- c(rep(NA, i), x[1:(length(x)-i)])
+    
+    count <- count + !is.na(new)
+    new[is.na(new)] <- 0
+    s <- s + new
+    
+    i <- i+1
+  }
+  
+  # Add the data from after
+  i <- 1
+  while (i <= after) {
+    # This is the vector with offset values to add
+    new   <- c(x[(i+1):length(x)], rep(NA, i))
+    
+    count <- count + !is.na(new)
+    new[is.na(new)] <- 0
+    s <- s + new
+    
+    i <- i+1
+  }
+  
+  # return sum divided by count
+  s/count
+}
+
+annot<-annotation(myGene)
+#margin<-145000
+#margin<-50000
+
+margin<-35000
+
+margin<-30000
+locus<-strsplit(annot$locus,":")
+locus<-unlist(locus)
+chrom<-locus[[1]]
+start_and_end<-strsplit(locus[[2]],"-")
+start_and_end<-unlist(start_and_end)
+from<-as.numeric(start_and_end[[1]])-margin
+to<-as.numeric(start_and_end[[2]])+margin
+
+genetrack<-GeneRegionTrack(mm10DB,rstarts=from,rends=to,chromosome=chrom,showId=TRUE,geneSymbol=TRUE,genome=genome,name="LincRNA Isoforms",fill="steelblue")
+ 
+reps<-replicates(cuff)
+files<-lapply(reps$file,function(x){strsplit(x, "/")})
+files<-as.data.frame(files)
+
+samples<-(t(files[10,]))
+rownames(samples)<-NULL
+JRs<-samples
+JRs<-gsub("_dup","",JRs)
+
+#setwd(analysisdir)
+deletionCoords<-read.table("/Volumes/valor2/users/agroff/seq/PERIL/analysis/mm10DeletionCoords.txt",sep="\t",header=TRUE,stringsAsFactors=FALSE)
+colnames(deletionCoords)<-c("gene_name","gene_region","deletionRegion")
+koStrain<-strain
+coords<-deletionCoords[which(deletionCoords$gene_name==koStrain),3]
+coords<-strsplit(coords,":")
+coords<-unlist(coords)
+koChr<-coords[1]
+positions<-strsplit(coords[[2]],"-")
+positions<-unlist(positions)
+koStart<-as.numeric(positions[1])
+koWidth<-abs(as.numeric(positions[2])-as.numeric(positions[1]))
+
+
+bamRoot<-'/Volumes/valor2/users/agroff/seq/PERIL/data/bam_old/'
+
+
+myFiles<-as.data.frame(cbind(c("WB","WG","WK","Wm", "KB","KG","KK","Km"),c("JR716","JR710","JR722","WT4_mESC_3","JR718","JR711","JR726","KO6_mESC_2"),c("WT Brain","WT GEOB","WT Kidney","WT mESC","KO Brain","KO GEOB","KO Kidney","KO mESC")))
+                       
+#bamFiles<-lapply(myJRs,function(x){paste(bamRoot,x,"/accepted_hits.bam",sep="")})
+#bamNames<-reps$rep_name
+
+bamFiles<-lapply(myFiles$V2,function(x){paste(bamRoot,x,"/accepted_hits.bam",sep="")})
+bamNames<-as.character(myFiles$V1)
+bamColors<-c("Black","Black","Black","Black","Gray","Gray","Gray","Gray")
+
+makeBamTrack<-function(bamFile,bamName,genome=genome,chromosome,color="steelblue",w=10,ylim=c(0,20)){ #for peril, 250 is the height of KO mESC peril ... 
+   track<-DataTrack(range=bamFile,name=bamName,genome=genome,type="h",transformation=function(x){movingAverage(x,w)},col=color,fill.histogram=color,col.histogram=color,chromosome=chromosome, ylim=ylim, lwd=1.5)
+   return(track)
+ }
+
+doPlot<-function(genome=genome,name,myChr,from,to,w,bamFiles,bamNames,koStart,koWidth,koChr){
+   #Make Tracks
+   axTrack<-GenomeAxisTrack(add53 = TRUE,add35 = TRUE, labelPos = "above")
+   #idxTrack <- IdeogramTrack(genome = genome, chromosome = myChr)
+   
+   koTrack<-AnnotationTrack(start=koStart,width=koWidth,chromosome=koChr,strand="*",id=koStrain,genome="mm10",name="KO Region")
+   #BamTracks
+   write("\tBamTracks",stderr())
+   bamTracks<-list()
+   bamOrder<-c(1:length(bamFiles))
+ 
+   for (i in bamOrder){
+     track<-makeBamTrack(bamFiles[[i]],bamNames[[i]],genome=genome,chromosome=myChr,color=bamColors[i],w=w)
+     bamTracks<-c(bamTracks,track)
+   }
+   
+   #Plot Tracks
+   write("\tplotting...",stderr())
+   # myTracks<-c(bamTracks,knownGenes)
+   #myTracks<-c(idxTrack,axTrack,genetrack,bamTracks,koTrack)
+   myTracks<-c(axTrack,genetrack,bamTracks,koTrack)
+   #trackSizes<-c(1,1,3,rep(1,length(bamTracks)),1)
+   trackSizes<-c(1,3,rep(1,length(bamTracks)),1)
+ 
+   plotTracks(myTracks,from=from,to=to,chromosome=myChr,showAxis=FALSE,background.title="black",col.title="white",col.axis="black",sizes=trackSizes,geneSymbol=TRUE)
+ }
+
+#pdf("PerilTracks_011918.pdf")#0-250
+pdf("PerilTracks_013018.pdf")#0-20 (scale to reads in mesc wt)
+doPlot(genome=genome, name=name, myChr=chrom, from=from, to=to, w=10,bamFiles=bamFiles, bamNames=bamNames, koStart=koStart,koWidth=koWidth,koChr=koChr)
+dev.off()
+
+
+```
