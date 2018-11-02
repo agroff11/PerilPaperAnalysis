@@ -1,0 +1,90 @@
+#!/usr/bin/env python2.7
+######################################### USAGE #############################################
+### makeCountFiles_barcodeCount_GFP barcodeDictioarysearch.p NAME barcodeSize files1.fastq###
+### READ 1 NAME MUST CONTAIN "read1"					 	          ###
+#############################################################################################
+################################################################
+### counts tags from GFP lib and prints bed of coverage      ###
+################################################################
+
+import copy
+import re
+import itertools
+from Bio import SeqIO
+from Bio.Seq import Seq
+import collections
+import pickle
+import sys
+
+#read in all replicates 
+barcodes=sys.argv[1]
+NAME=sys.argv[2]
+barcodeSize=int(float(sys.argv[3]))
+files=sys.argv[4:] #print files[1:]
+
+print "barcodes:", barcodes
+print "files: ", files
+
+dSearch=pickle.load(open(barcodes,'rb'))
+barcodesUsed=[]
+nucleotides=["A","T","C","G"]
+for a in nucleotides:
+     for b in nucleotides:
+          for c in nucleotides:
+               for d in nucleotides:
+                    for tag in dSearch[a][b][c][d].keys():
+                         barcodesUsed.append(tag)
+print len(barcodesUsed)," length of barcodes used"
+
+outFile="".join([NAME,"_counts.tab"])
+out=open(outFile,'w')
+print>>out,"\t".join(["barcodes","\t".join(files)])
+
+FinalCountTable=dict();
+initCounts=dict(); #initialize as dictionary set to zeros of all barcodes
+for tag in barcodesUsed:
+        FinalCountTable[tag]=[tag]
+        initCounts[tag]=0
+
+for f1 in files:
+	tagCounts=copy.deepcopy(initCounts) #unique good tag counts 
+	read1=open(f1,"rU")
+	OligosFromSeq=SeqIO.parse(read1, "fastq-sanger")
+	total=0;matched=0;wrong=0;unique_wrong={}
+	# wrong = a correct barcode found, but element associated not a perfect match
+
+	## UPDATE ##
+	# KEEP TRACK OF THE MISMATCHED BARCODES 
+
+	for R1 in OligosFromSeq:
+		total+=1
+		if total%100000==0:
+			print "Total reads assessed: ", total
+        	if 'TTATTCTTCAC' in R1.seq: ### if has GFP
+               		b=str(R1.reverse_complement().seq[-barcodeSize:]) # need to look for the reverse complement of the barcode!
+			# CANNOT CURRENTLY HANDLE "N" IN BARCODE...
+			if "N" in b:
+				continue
+			if b in dSearch[b[0]][b[1]][b[2]][b[3]].keys(): # if barcode exists, increase count occurance of that barcode
+				if b not in tagCounts.keys():
+					tagCounts[b]=b;	
+				tagCounts[b]+=1	
+	# After reading through file, tally/print occurances of each barcode for that file 
+	nucleotides=["A","T","C","G"]
+	for a in nucleotides:
+		for b in nucleotides:
+			for c in nucleotides:
+				for d in nucleotides:
+				#for each barcode, print barcode, #counts as countsFile
+					for barcode in dSearch[a][b][c][d].keys():
+						# For each file, this appends the count for the file in the correct position 
+						if barcode in FinalCountTable.keys():
+							FinalCountTable[barcode].append(tagCounts[barcode])					
+						else:
+							print "SHOULD NEVER GET HERE!!"
+							FinalCountTable[barcode]=[barcode]
+							FinalCountTable[barcode].append(tagCounts[barcode])
+	read1.close()
+for barcode in FinalCountTable:
+	print>>out, "\t".join(map(str,FinalCountTable[barcode]))
+out.close()
